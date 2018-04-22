@@ -6,6 +6,8 @@ import logging
 from logging.config import fileConfig
 import argparse
 from keras import backend as K
+import multiprocessing as mp
+import threading as thr
 
 """Import our own modules"""
 sys.path.append("modules")
@@ -598,6 +600,61 @@ class NucleiUtility(object):
         self.logger.debug(cluster_test_df_list[self.GREY_IX].sample())
         self.logger.debug(cluster_test_df_list[self.COLOUR_IX].sample())
 
+    def do_post_processing_batch(self, all_images, all_predictions):
+        # Determine the ideal threading parallelism - one per CPU is good for now.
+        num_threads = mp.cpu_count()
+        self.logger.debug('Detected %d CPUs, creating %d worker threads for prediction post-processing', num_threads, num_threads)
+        result = [None]*num_threads
+
+        def parallel_thread(images, predictions, result, index):
+            # Keep everything in try/catch loop so we handle errors
+            self.logger.debug('Post-processing worker %d starting processing', index)
+            result[index] = [impr.post_process_image(img, prediction[:,:,0], prediction[:,:,1]) for img, prediction in zip(images, predictions)]
+            self.logger.debug('Post-processing worker %d finished processing', index)
+            return True
+            
+        threads = []
+        images_len = len(all_images)
+        images_per_thread = int(images_len / num_threads)
+        for ii in range(num_threads):
+            if ii < (num_threads - 1):
+                images = all_images[ii * images_per_thread: (ii + 1) * images_per_thread]
+                predictions = all_predictions[ii * images_per_thread: (ii + 1) * images_per_thread]
+            else:
+                images = all_images[ii * images_per_thread:]
+                predictions = all_predictions[ii * images_per_thread:]
+
+            thread = thr.Thread(target=parallel_thread, args=[images, predictions, result, ii])
+            thread.start()
+            threads.append(thread)
+        
+        # We now pause execution on the main thread by 'joining' all of our started threads.
+        for thread in threads:
+            thread.join()
+       
+        # Now merge all results back together in the right order
+        labels = []
+        for ii in range(num_threads):
+            labels.extend(result[ii])
+        return labels
+
+    def do_post_processing(self, all_images, all_predictions):
+        # Iterator to chunk images/predictions into batches.
+        def postprocess_batches(images, predictions, batch_size):
+            for i in range(0, len(images), batch_size):
+                yield (images[i:i + batch_size], predictions[i:i + batch_size])
+
+        labels = []
+
+        # Split images/predictions up to batches of 100 at a time. Each batch is then processed
+        # in parallel by multiple threads.
+        batch_size = 100
+        for (images, predictions) in postprocess_batches(all_images, all_predictions, batch_size):
+            self.logger.info('Post-process batch of %d images...', len(images))
+            labels.extend(self.do_post_processing_batch(images, predictions))
+
+        return labels
+
     def post_process_predictions(self, img_df, input_type, colour_type):
         self.logger.info('Post processing predicted %s %s images and generate labels for each image', input_type, colour_type)
         if self.MOSAIC:
@@ -614,7 +671,11 @@ class NucleiUtility(object):
             mosaic_images, _, mosaic_dict, _ = mosaic.make_mosaic(img_df['image'].values.tolist(), None)
             mosaic_images = [impr.preprocess_image(x) for x in mosaic_images]
             (all_images, _, all_predictions) = mosaic.merge_mosaic_images(mosaic_dict, mosaic_images, all_images, all_predictions)
-            labels = [impr.post_process_image(img, prediction[:,:,0], prediction[:,:,1]) for img, prediction in zip(all_images, all_predictions)]
+            # Change post-processing to multi-threaded. No change in prediction logic, just with the
+            # much larger number of test images, we split them up into groups of 100 at a time, and
+            # then split each group of 100 images up to be handled by separate threads.
+            #labels = [impr.post_process_image(img, prediction[:,:,0], prediction[:,:,1]) for img, prediction in zip(all_images, all_predictions)]
+            labels = self.do_post_processing(all_images, all_predictions)
             labels = mosaic.split_merged_mosaic(mosaic_dict, labels, input_len)
             labels = [renumber_labels(label_img) for label_img in labels]
             img_df['label'] = pd.Series(labels).values

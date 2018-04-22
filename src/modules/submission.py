@@ -90,9 +90,13 @@ def generate_submission_from_df(dfs, submission_file):
 
     for df in dfs:
         for img_id, label in zip(df.imageID, df.label):
-            rle = list(label_to_rles(label))
-            rles.extend(rle)
-            new_test_ids.extend([img_id] * len(rle))
+            if len(np.unique(label)) == 1:
+                rles.extend([''])
+                new_test_ids.extend([img_id])
+            else:
+                rle = list(label_to_rles(label))
+                rles.extend(rle)
+                new_test_ids.extend([img_id] * len(rle))
 
     sub = pd.DataFrame()
     sub['ImageId'] = new_test_ids

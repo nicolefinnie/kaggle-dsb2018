@@ -108,7 +108,7 @@ def build_model(input_height, input_width, input_channels, output_channels, min_
     c9 = Dropout(min_dropout) (c9)
     c9 = Conv2D(16, (3, 3), activation='elu', kernel_initializer='he_normal', padding='same') (c9)
 
-    outputs = Conv2D(output_channels, (1, 1), activation='sigmoid') (c9) # try softmax  with categorial_crossentropy as loss
+    outputs = Conv2D(output_channels, (1, 1), activation='sigmoid') (c9) 
 
     model = Model(inputs=[inputs], outputs=[outputs])
     return model
